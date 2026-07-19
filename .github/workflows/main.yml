@@ -89,6 +89,22 @@ on:
         description: "收集 SUSFS 集成补丁（仅 SukiSU / ReSukiSU）"
         type: boolean
         default: true
+      use_zeromount:
+        description: "啟用 ZeroMount（實驗性，需 SUSFS，主要適配 ReSukiSU）"
+        type: boolean
+        default: false
+      use_yukizygisk:
+        description: "启用YukiZygisk built-in"
+        type: boolean
+        default: false
+      extra_features:
+        description: "額外功能，逗號分隔：ntfs3,bbr,tmpfs,ipset,hide_ipv6_nat"
+        type: string
+        default: ""
+      disable_samsung_security:
+        description: "關閉三星安全堆疊/簽名限制（僅三星內核建議測試）"
+        type: boolean
+        default: false
 
       # ==================== 开关（默认关闭） ====================
       build_a12_5_10:
@@ -165,6 +181,14 @@ jobs:
       droidspaces: ${{ inputs.droidspaces }}
       artifact_upload_mode: "上传全部"
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync }}
+      use_zeromount: ${{ inputs.use_zeromount }}
+      use_yukizygisk: ${{ inputs.use_yukizygisk }}
+      use_ntfs3: ${{ contains(inputs.extra_features, 'ntfs3') }}
+      use_bbr: ${{ contains(inputs.extra_features, 'bbr') }}
+      use_full_tmpfs: ${{ contains(inputs.extra_features, 'tmpfs') }}
+      use_full_ipset: ${{ contains(inputs.extra_features, 'ipset') }}
+      hide_ipv6_nat_config: ${{ contains(inputs.extra_features, 'hide_ipv6_nat') }}
+      disable_samsung_security: ${{ inputs.disable_samsung_security }}
       called_from_main: true
 
   # ==================== Android 13 - 5.15 构建 ====================
@@ -187,6 +211,14 @@ jobs:
       droidspaces: ${{ inputs.droidspaces }}
       artifact_upload_mode: "上传全部"
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync }}
+      use_zeromount: ${{ inputs.use_zeromount }}
+      use_yukizygisk: ${{ inputs.use_yukizygisk }}
+      use_ntfs3: ${{ contains(inputs.extra_features, 'ntfs3') }}
+      use_bbr: ${{ contains(inputs.extra_features, 'bbr') }}
+      use_full_tmpfs: ${{ contains(inputs.extra_features, 'tmpfs') }}
+      use_full_ipset: ${{ contains(inputs.extra_features, 'ipset') }}
+      hide_ipv6_nat_config: ${{ contains(inputs.extra_features, 'hide_ipv6_nat') }}
+      disable_samsung_security: ${{ inputs.disable_samsung_security }}
       called_from_main: true
 
   # ==================== Android 14 - 6.1 构建 ====================
@@ -209,6 +241,14 @@ jobs:
       droidspaces: ${{ inputs.droidspaces }}
       artifact_upload_mode: "上传全部"
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync }}
+      use_zeromount: ${{ inputs.use_zeromount }}
+      use_yukizygisk: ${{ inputs.use_yukizygisk }}
+      use_ntfs3: ${{ contains(inputs.extra_features, 'ntfs3') }}
+      use_bbr: ${{ contains(inputs.extra_features, 'bbr') }}
+      use_full_tmpfs: ${{ contains(inputs.extra_features, 'tmpfs') }}
+      use_full_ipset: ${{ contains(inputs.extra_features, 'ipset') }}
+      hide_ipv6_nat_config: ${{ contains(inputs.extra_features, 'hide_ipv6_nat') }}
+      disable_samsung_security: ${{ inputs.disable_samsung_security }}
       called_from_main: true
 
   # ==================== Android 15 - 6.6 构建 ====================
@@ -231,6 +271,14 @@ jobs:
       droidspaces: ${{ inputs.droidspaces }}
       artifact_upload_mode: "上传全部"
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync }}
+      use_zeromount: ${{ inputs.use_zeromount }}
+      use_yukizygisk: ${{ inputs.use_yukizygisk }}
+      use_ntfs3: ${{ contains(inputs.extra_features, 'ntfs3') }}
+      use_bbr: ${{ contains(inputs.extra_features, 'bbr') }}
+      use_full_tmpfs: ${{ contains(inputs.extra_features, 'tmpfs') }}
+      use_full_ipset: ${{ contains(inputs.extra_features, 'ipset') }}
+      hide_ipv6_nat_config: ${{ contains(inputs.extra_features, 'hide_ipv6_nat') }}
+      disable_samsung_security: ${{ inputs.disable_samsung_security }}
       called_from_main: true
 
   # ==================== Android 16 - 6.12 构建 ====================
@@ -253,6 +301,14 @@ jobs:
       droidspaces: ${{ inputs.droidspaces }}
       artifact_upload_mode: "上传全部"
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync }}
+      use_zeromount: ${{ inputs.use_zeromount }}
+      use_yukizygisk: ${{ inputs.use_yukizygisk }}
+      use_ntfs3: ${{ contains(inputs.extra_features, 'ntfs3') }}
+      use_bbr: ${{ contains(inputs.extra_features, 'bbr') }}
+      use_full_tmpfs: ${{ contains(inputs.extra_features, 'tmpfs') }}
+      use_full_ipset: ${{ contains(inputs.extra_features, 'ipset') }}
+      hide_ipv6_nat_config: ${{ contains(inputs.extra_features, 'hide_ipv6_nat') }}
+      disable_samsung_security: ${{ inputs.disable_samsung_security }}
       called_from_main: true
 
   # ==================== 收集补丁冲突文件 ====================
