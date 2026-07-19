@@ -18,12 +18,12 @@ on:
           - "6.1"
           - "6.6"
           - "6.12"
-        default: "5.10"
+        default: "6.6"
       os_patch_level:
         description: "安全补丁级别 (如 2022-01, lts)"
         required: true
         type: string
-        default: "2022-01"
+        default: "2025-03"
 
       # ==================== KernelSU 配置 ====================
       kernelsu_variant:
@@ -48,7 +48,7 @@ on:
         description: "自定义构建时间 (可选，N或留空=当前UTC)"
         required: false
         type: string
-        default: "Sun Dec 01 08:10:00 UTC 2024"
+        default: "Tue Aug 26 07:33:36 UTC 2025"
 
       # ==================== 选项配置 ====================
       use_kpm:
@@ -85,6 +85,11 @@ on:
         default: false
 
       # ==================== 功能开关 ====================
+      use_yukizygisk:
+        description: "启用YukiZygisk built-in"
+        required: false
+        type: boolean
+        default: false
       use_zram:
         description: "启用 ZRAM 增强算法"
         required: true
@@ -112,6 +117,41 @@ on:
         default: false
       supp_op:
         description: "启用一加 8E 支持"
+        required: false
+        type: boolean
+        default: false
+      use_zeromount:
+        description: "啟用 ZeroMount（實驗性，需 SUSFS，主要適配 ReSukiSU）"
+        required: false
+        type: boolean
+        default: false
+      use_ntfs3:
+        description: "啟用 NTFS3 文件系統支持"
+        required: false
+        type: boolean
+        default: false
+      use_bbr:
+        description: "啟用 FQ + TCP BBR"
+        required: false
+        type: boolean
+        default: false
+      use_full_tmpfs:
+        description: "啟用完整 TMPFS/XATTR/ACL/INODE64"
+        required: false
+        type: boolean
+        default: false
+      use_full_ipset:
+        description: "啟用完整 ipset/netfilter 容器網路支持"
+        required: false
+        type: boolean
+        default: false
+      hide_ipv6_nat_config:
+        description: "在 /proc/config.gz 中隱藏 CONFIG_IP6_NF_NAT=y"
+        required: false
+        type: boolean
+        default: false
+      disable_samsung_security:
+        description: "關閉三星安全堆疊/簽名限制（僅三星內核建議測試）"
         required: false
         type: boolean
         default: false
@@ -214,6 +254,14 @@ jobs:
       enable_susfs: ${{ !inputs.cancel_susfs }}
       droidspaces: ${{ inputs.droidspaces || 'off' }}
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync || false }}
+      use_zeromount: ${{ inputs.use_zeromount || false }}
+      use_ntfs3: ${{ inputs.use_ntfs3 || false }}
+      use_yukizygisk: ${{ inputs.use_yukizygisk || false }}
+      use_bbr: ${{ inputs.use_bbr || false }}
+      use_full_tmpfs: ${{ inputs.use_full_tmpfs || false }}
+      use_full_ipset: ${{ inputs.use_full_ipset || false }}
+      hide_ipv6_nat_config: ${{ inputs.hide_ipv6_nat_config || false }}
+      disable_samsung_security: ${{ inputs.disable_samsung_security || false }}
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
 
   get-ksu-manager:

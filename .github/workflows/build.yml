@@ -40,6 +40,10 @@ on:
         default: "Sun Dec 01 08:10:00 UTC 2024"
 
       # ==================== 功能开关 ====================
+      use_yukizygisk:
+        required: false
+        type: boolean
+        default: false
       use_zram:
         required: true
         type: boolean
@@ -80,6 +84,34 @@ on:
         required: false
         type: boolean
         default: false
+      use_zeromount:
+        required: false
+        type: boolean
+        default: false
+      use_ntfs3:
+        required: false
+        type: boolean
+        default: false
+      use_bbr:
+        required: false
+        type: boolean
+        default: false
+      use_full_tmpfs:
+        required: false
+        type: boolean
+        default: false
+      use_full_ipset:
+        required: false
+        type: boolean
+        default: false
+      hide_ipv6_nat_config:
+        required: false
+        type: boolean
+        default: false
+      disable_samsung_security:
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build-kernel:
@@ -112,6 +144,14 @@ jobs:
           echo "CVE-2026-43499: ${{ inputs.cve_2026_43499_patch }}"
           echo "Droidspaces   : ${{ inputs.droidspaces }}"
           echo "NTSync        : ${{ inputs.droidspaces_ntsync }}"
+          echo "ZeroMount     : ${{ inputs.use_zeromount }}"
+          echo "NTFS3         : ${{ inputs.use_ntfs3 }}"
+          echo "BBR           : ${{ inputs.use_bbr }}"
+          echo "YukiZygisk    : ${{ inputs.use_yukizygisk }}"
+          echo "Full TMPFS    : ${{ inputs.use_full_tmpfs }}"
+          echo "Full ipset    : ${{ inputs.use_full_ipset }}"
+          echo "IPv6 NAT Hide : ${{ inputs.hide_ipv6_nat_config }}"
+          echo "Samsung SecOff: ${{ inputs.disable_samsung_security }}"
           echo "产物上传模式  : ${{ inputs.artifact_upload_mode }}"
           echo "Stock Config  : 自动检测 config/stock_defconfig"
           echo "========================================"
@@ -153,8 +193,10 @@ jobs:
           cat >> $GITHUB_ENV << EOF
           CONFIG=$CONFIG
           KERNEL_ROOT=$KERNEL_ROOT
+          ANDROID_CLANG_ROOT=$KERNEL_ROOT/prebuilts/clang/host/linux-x86
           LEGACY_SUKISU_CONFIG=$LEGACY_SUKISU_CONFIG
           DEFCONFIG=$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig
+          DEFCONFIG_BASELINE=$RUNNER_TEMP/gki_defconfig.baseline
           SUSFS4KSU=$GITHUB_WORKSPACE/susfs4ksu
           KERNEL_PATCHES=$GITHUB_WORKSPACE/kernel_patches
           SUKISU_PATCHES=$GITHUB_WORKSPACE/SukiSU_patch
@@ -234,11 +276,11 @@ jobs:
 
       - name: 克隆依赖仓库
         run: |
-          ANYKERNEL_BRANCH="gki-2.0"
+          ANYKERNEL_BRANCH="master"
           SUSFS_BRANCH="gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}"
 
           echo "克隆 AnyKernel3..."
-          git clone https://github.com/WildKernels/AnyKernel3.git -b "$ANYKERNEL_BRANCH"
+          git clone https://github.com/ReSukiSU-GKI/AnyKernel3.git -b "$ANYKERNEL_BRANCH"
           rm -rf AnyKernel3/.git
 
           echo "克隆 SUSFS (分支: $SUSFS_BRANCH)..."
@@ -290,7 +332,7 @@ jobs:
       - name: 初始化并同步内核源码
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
-          git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git gcc
+          echo "Use Android kernel manifest toolchains; skip external LineageOS GCC clone."
 
           FORMATTED_BRANCH="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.os_patch_level }}"
           echo "初始化 repo，分支: common-${FORMATTED_BRANCH}"
@@ -307,6 +349,35 @@ jobs:
 
           $REPO --trace sync -c -j$(nproc --all) --no-tags --fail-fast
           echo "REMOTE_BRANCH=$REMOTE_BRANCH" >> $GITHUB_ENV
+
+      - name: Configure Android Clang
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          set -euo pipefail
+
+          CLANG_ROOT="$KERNEL_ROOT/prebuilts/clang/host/linux-x86"
+
+          if [ ! -d "$CLANG_ROOT" ]; then
+            echo "::error::Android Clang prebuilt directory not found: $CLANG_ROOT"
+            echo "::error::The kernel manifest should sync prebuilts/clang/host/linux-x86."
+            exit 1
+          fi
+
+          CLANG_BIN="$(find "$CLANG_ROOT" -path '*/clang-*/bin/clang' -type f -printf '%h\n' | sort -V | tail -n1)"
+
+          if [ -z "$CLANG_BIN" ] || [ ! -x "$CLANG_BIN/clang" ]; then
+            echo "::error::No executable Android clang found under $CLANG_ROOT"
+            find "$CLANG_ROOT" -maxdepth 3 -type f -name clang -print || true
+            exit 1
+          fi
+
+          echo "Using Android Clang: $CLANG_BIN/clang"
+          "$CLANG_BIN/clang" --version
+
+          echo "ANDROID_CLANG_ROOT=$CLANG_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+          echo "CLANG_PREBUILT_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+          echo "$CLANG_BIN" >> "$GITHUB_PATH"
 
       - name: 应用 Stock Config 伪装
         run: |
@@ -886,6 +957,381 @@ jobs:
             fi
           fi
 
+      - name: 應用 YukiZygisk (整合 built-in)
+        if: inputs.use_yukizygisk
+        working-directory: ${{ env.KERNEL_ROOT }}
+        env:
+          YZ_FORK_URL: ${{ vars.YZ_FORK_URL || 'https://github.com/mctea01/YukiZygisk.git' }}
+          YZ_FORK_REF: ${{ vars.YZ_FORK_REF || 'main' }}
+        run: |
+          set -euo pipefail
+
+          KSU_DIR="KernelSU/kernel"
+          if [ ! -f "$KSU_DIR/Kbuild" ]; then
+            echo "::error::找不到 $KSU_DIR/Kbuild，KernelSU 尚未 setup 或非 ReSukiSU/SukiSU 佈局" >&2
+            exit 1
+          fi
+
+          # 取得整合樹（來自你的 fork）
+          YZ_TMP="$RUNNER_TEMP/YukiZygisk_fork"
+          rm -rf "$YZ_TMP"
+          git clone --depth 1 --branch "$YZ_FORK_REF" "$YZ_FORK_URL" "$YZ_TMP"
+          SRC="$YZ_TMP/kernel"
+          if [ ! -f "$SRC/core/module_integrated.c" ] || [ ! -f "$SRC/Kbuild.inc" ]; then
+            echo "::error::fork 不是模式 B 整合形態（缺 core/module_integrated.c 或 Kbuild.inc）" >&2
+            exit 1
+          fi
+
+          # 記錄實際整合的 YukiZygisk commit SHA（可追溯）
+          YZ_SHA="$(git -C "$YZ_TMP" rev-parse HEAD)"
+          echo "YZ_SHA=$YZ_SHA" >> "$GITHUB_ENV"
+          {
+            echo "### YukiZygisk 整合"
+            echo "- fork: \`$YZ_FORK_URL\`"
+            echo "- ref:  \`$YZ_FORK_REF\`"
+            echo "- commit: \`$YZ_SHA\`"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+          # 1) 複製整合樹到 KernelSU 內（LKM 檔一併帶入但不會被編）
+          rm -rf "$KSU_DIR/yukizygisk"
+          mkdir -p "$KSU_DIR/yukizygisk"
+          cp -r "$SRC"/. "$KSU_DIR/yukizygisk/"
+          # 在整合樹內留下 SHA 標記，方便從內核源碼樹回溯
+          printf '%s\n' "$YZ_SHA" > "$KSU_DIR/yukizygisk/INTEGRATED_SHA"
+
+          # 2) Kbuild：引入 built-in 物件清單（可重入）
+          if ! grep -q 'yukizygisk/Kbuild.inc' "$KSU_DIR/Kbuild"; then
+            printf '\n# YukiZygisk integrated\ninclude $(src)/yukizygisk/Kbuild.inc\n' >> "$KSU_DIR/Kbuild"
+            printf '\n# yukizygisk include path\nccflags-y += -I$(srctree)/$(src)/yukizygisk\n' >> "$KSU_DIR/Kbuild"
+          fi
+
+          # 3) Kconfig：新增 CONFIG_KSU_YUKIZYGISK（可重入）
+          if ! grep -q 'config KSU_YUKIZYGISK' "$KSU_DIR/Kconfig"; then
+            {
+              printf '\n'
+              printf 'config KSU_YUKIZYGISK\n'
+              printf '\tbool "Integrated YukiZygisk (built-in, inline hook)"\n'
+              printf '\tdepends on KSU\n'
+              printf '\tdepends on KPROBES\n'
+              printf '\tdefault n\n'
+              printf '\thelp\n'
+              printf '\t  Build the YukiZygisk kernel side directly into KernelSU.\n'
+              printf '\t  Control fd via KSU_IOCTL_YZ_INSTALL_FD; owner via kallsyms.\n'
+            } >> "$KSU_DIR/Kconfig"
+          fi
+
+          # 4) UAPI ioctl 定義（放在 KERNEL_SU_UAPI_VERSION 之後）
+          UAPI="$KSU_DIR/include/uapi/supercall.h"
+          if ! grep -q 'KSU_IOCTL_YZ_INSTALL_FD' "$UAPI"; then
+            awk '{print}
+              /KERNEL_SU_UAPI_VERSION *= *2;/ && !d{
+                print ""
+                print "/* YukiZygisk: install the anonymous YZ control fd for the caller */"
+                print "DEFINE_KSU_UAPI_CONST(__u32, KSU_IOCTL_YZ_INSTALL_FD, _IOR('"'"'K'"'"', 0x50, __s32))"
+                d=1}' "$UAPI" > "$UAPI.t" && mv "$UAPI.t" "$UAPI"
+            grep -q 'KSU_IOCTL_YZ_INSTALL_FD' "$UAPI" || { echo "::error::UAPI 錨點缺失（KERNEL_SU_UAPI_VERSION）" >&2; exit 1; }
+          fi
+
+          # 5) dispatch.c：include + handler + 表格項
+          #    - handler 呼叫穩定宿主 API yukizygisk_integrated_install_fd()
+          #      （不直接碰內部的 yukizygisk_control_install_fd(bool)）。
+          #    - 保留 only_root 權限檢查與 copy_to_user 失敗時關閉 FD 的處理；
+          #      關閉採 ReSukiSU 既有的版本相依寫法（close_fd / ksys_close），
+          #      dispatch.c 已 include fdtable.h / syscalls.h / version.h。
+          #    - 表格項錨定於哨兵項（{.cmd = 0 ... .handler = NULL}）之前注入，
+          #      不依賴不存在的 "// downstream begin" 註解。
+          #    - 哨兵項在 ReSukiSU 是「多行」寫法（'{' 獨佔一行、.cmd = 0 在次行），
+          #      因此以狀態機同時支援多行與單行兩種排版，不用單行 regex。
+          DISP="$KSU_DIR/supercall/dispatch.c"
+          if ! grep -q 'do_yz_install_fd' "$DISP"; then
+            awk '{print}
+              /#include "supercall\/supercall.h"/ && !i{
+                print "#ifdef CONFIG_KSU_YUKIZYGISK"
+                print "#include <linux/version.h>"
+                print "#include <linux/fdtable.h>"
+                print "#include <linux/syscalls.h>"
+                print "#include \"yukizygisk/integrated.h\""
+                print "#endif"; i=1}' \
+              "$DISP" > "$DISP.t" && mv "$DISP.t" "$DISP"
+            awk '/\/\/ IOCTL handlers mapping table/ && !h{
+                print "#ifdef CONFIG_KSU_YUKIZYGISK"
+                print "static int do_yz_install_fd(void __user *arg)"; print "{"
+                print "    int fd = yukizygisk_integrated_install_fd();"
+                print "    if (fd < 0)"; print "        return fd;"
+                print "    if (copy_to_user(arg, &fd, sizeof(fd))) {"
+                print "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)"
+                print "        close_fd(fd);"
+                print "#else"
+                print "        ksys_close(fd);"
+                print "#endif"
+                print "        return -EFAULT;"; print "    }"
+                print "    return 0;"; print "}"; print "#endif"; print ""; h=1}
+              {print}' "$DISP" > "$DISP.t" && mv "$DISP.t" "$DISP"
+            awk '
+              function emit() {
+                print "#ifdef CONFIG_KSU_YUKIZYGISK"
+                print "    {.cmd = KSU_IOCTL_YZ_INSTALL_FD,"
+                print "     .name = \"YZ_INSTALL_FD\","
+                print "     .handler = do_yz_install_fd,"
+                print "     .perm_check = only_root},"
+                print "#endif"
+                t = 1
+              }
+              t { print; next }
+              {
+                # 多行哨兵：上一行是獨佔的 "{"，本行是 ".cmd = 0,"
+                if (hold) {
+                  if ($0 ~ /^[ \t]*\.cmd[ \t]*=[ \t]*0[ \t]*,/) emit()
+                  print pend
+                  hold = 0
+                }
+              }
+              !t && /^[ \t]*\{[ \t]*$/ { pend = $0; hold = 1; next }
+              # 單行哨兵排版的後備錨點
+              !t && /\.cmd[ \t]*=[ \t]*0[^0-9]/ && /\.handler[ \t]*=[ \t]*NULL/ { emit() }
+              { print }
+              END { if (hold) print pend }
+            ' "$DISP" > "$DISP.t" && mv "$DISP.t" "$DISP"
+            grep -q 'yukizygisk/integrated.h' "$DISP" &&
+              grep -q 'static int do_yz_install_fd' "$DISP" &&
+              grep -q 'yukizygisk_integrated_install_fd' "$DISP" &&
+              grep -q '\.handler = do_yz_install_fd' "$DISP" || {
+                echo "::error::dispatch.c 錨點缺失（哨兵項或穩定 API 未注入）" >&2
+                echo "-- dispatch.c 哨兵項附近內容（供比對錨點）--" >&2
+                grep -n -B4 -A4 'handler = NULL' "$DISP" >&2 || true
+                exit 1
+              }
+          fi
+
+          # 6) core/init.c：ksu_supercalls_init(); 之後呼叫 yukizygisk_kernel_init()
+          INIT="$KSU_DIR/core/init.c"
+          if ! grep -q 'yukizygisk_kernel_init' "$INIT"; then
+            awk '/^[ \t]*ksu_supercalls_init\(\);/ && !d{
+                print; print "#ifdef CONFIG_KSU_YUKIZYGISK"; print "    yukizygisk_kernel_init();"; print "#endif"; d=1; next}
+              {print}' "$INIT" > "$INIT.t" && mv "$INIT.t" "$INIT"
+            awk 'NR==1 && !p{print "#ifdef CONFIG_KSU_YUKIZYGISK"; print "extern void yukizygisk_kernel_init(void);"; print "#endif"; p=1}
+              {print}' "$INIT" > "$INIT.t" && mv "$INIT.t" "$INIT"
+            grep -q '^[[:space:]]*yukizygisk_kernel_init();' "$INIT" || {
+              echo "::error::init.c 注入失敗" >&2
+              exit 1
+            }
+          fi
+
+          # 7) defconfig 啟用（用本 workflow 的 $DEFCONFIG；check_defconfig 已於 build.config.gki 移除）
+          if [ -n "${DEFCONFIG:-}" ] && [ -f "$DEFCONFIG" ]; then
+            grep -q 'CONFIG_KSU_YUKIZYGISK=y' "$DEFCONFIG" || echo 'CONFIG_KSU_YUKIZYGISK=y' >> "$DEFCONFIG"
+          else
+            echo "::warning::找不到 \$DEFCONFIG，請確認 CONFIG_KSU_YUKIZYGISK 已於「配置内核选项」步驟啟用"
+          fi
+
+          # 8) 整合後錨點總檢查（任一缺失即失敗，避免靜默產生半套整合）
+          echo "== YukiZygisk 整合錨點檢查 =="
+          grep -q 'yukizygisk/Kbuild.inc' "$KSU_DIR/Kbuild"            || { echo "::error::Kbuild 未引入 yukizygisk/Kbuild.inc"; exit 1; }
+          grep -q 'config KSU_YUKIZYGISK' "$KSU_DIR/Kconfig"           || { echo "::error::Kconfig 缺 config KSU_YUKIZYGISK"; exit 1; }
+          grep -q 'KSU_IOCTL_YZ_INSTALL_FD' "$UAPI"                    || { echo "::error::UAPI 缺 KSU_IOCTL_YZ_INSTALL_FD"; exit 1; }
+          grep -q 'yukizygisk_integrated_install_fd' "$DISP"           || { echo "::error::dispatch.c 未呼叫穩定 API yukizygisk_integrated_install_fd()"; exit 1; }
+          grep -q '\.handler = do_yz_install_fd' "$DISP"               || { echo "::error::dispatch.c 缺 YZ_INSTALL_FD 表格項"; exit 1; }
+          grep -q '\.perm_check = only_root' "$DISP"                   || { echo "::error::dispatch.c YZ_INSTALL_FD 未套 only_root"; exit 1; }
+          grep -q 'yukizygisk_kernel_init' "$INIT"                     || { echo "::error::init.c 未呼叫 yukizygisk_kernel_init()"; exit 1; }
+          if [ -n "${DEFCONFIG:-}" ] && [ -f "$DEFCONFIG" ]; then
+            grep -q '^CONFIG_KSU_YUKIZYGISK=y' "$DEFCONFIG"            || { echo "::error::defconfig 未啟用 CONFIG_KSU_YUKIZYGISK=y"; exit 1; }
+          fi
+          echo "所有整合錨點檢查通過"
+
+          echo "YukiZygisk 整合完成 (fork=$YZ_FORK_URL@$YZ_FORK_REF commit=$YZ_SHA)"
+
+      - name: 應用 ZeroMount
+        if: inputs.use_zeromount && inputs.enable_susfs
+        working-directory: ${{ env.KERNEL_ROOT }}/common
+        run: |
+          set -euo pipefail
+
+          KSU_PATCH_VARIANT="${{ inputs.ksu_variant }}"
+          case "$KSU_PATCH_VARIANT" in
+            ReSukiSU) ;;
+            SukiSU|SukiSU-Ultra)
+              KSU_PATCH_VARIANT="SukiSU-Ultra"
+              ;;
+            *)
+              echo "::error::ZeroMount 目前僅支援 ReSukiSU 或 SukiSU。"
+              exit 1
+              ;;
+          esac
+
+          SUPER_BUILDERS_DIR="/tmp/Super-Builders"
+          rm -rf "$SUPER_BUILDERS_DIR"
+          git clone --depth 1 https://github.com/mctea01/Super-Builders.git "$SUPER_BUILDERS_DIR"
+
+          PATCH_DIR="$SUPER_BUILDERS_DIR/${{ inputs.android_version }}-${{ inputs.kernel_version }}/$KSU_PATCH_VARIANT/patches"
+
+          if [ ! -d "$PATCH_DIR" ]; then
+            echo "::error::找不到補丁目錄: $PATCH_DIR"
+            echo "::error::該 Android/Kernel/KernelSU 組合可能沒有對應的 Super-Builders 補丁。"
+            exit 1
+          fi
+
+          apply_patch_if_needed() {
+            local patch_file="$1"
+
+            if [ ! -f "$patch_file" ]; then
+              echo "::error::找不到補丁: $patch_file"
+              exit 1
+            fi
+
+            echo "正在套用補丁: $(basename "$patch_file")"
+
+            if patch -p1 --forward --dry-run -F3 < "$patch_file" >/dev/null 2>&1; then
+              patch -p1 --forward -F3 --no-backup-if-mismatch < "$patch_file"
+              echo "已套用: $(basename "$patch_file")"
+            else
+              echo "補丁可能已套用或無法乾淨套用，嘗試檢查: $(basename "$patch_file")"
+
+              if patch -p1 --reverse --dry-run -F3 < "$patch_file" >/dev/null 2>&1; then
+                echo "補丁已存在，跳過: $(basename "$patch_file")"
+              else
+                echo "::error::補丁無法套用: $patch_file"
+                exit 1
+              fi
+            fi
+          }
+
+          find_single_patch() {
+            local pattern="$1"
+            local result
+
+            result="$(find "$PATCH_DIR" -maxdepth 1 -type f -name "$pattern" | sort | head -n 1)"
+
+            if [ -z "$result" ]; then
+              echo "::error::找不到符合的補丁: $PATCH_DIR/$pattern" >&2
+              exit 1
+            fi
+
+            echo "$result"
+          }
+
+          PATCH_60="$(find_single_patch "60_zeromount-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch")"
+          PATCH_70="$(find_single_patch "70_*.patch")"
+
+          # # 51_ enhanced SUSFS: Kconfig 改動以 inline 方式加入
+          # if ! grep -q 'KSU_SUSFS_HIDDEN_NAME' fs/Kconfig 2>/dev/null; then
+            # python3 - <<'KCONFIG_PY'
+          # import pathlib
+          # p = pathlib.Path("fs/Kconfig")
+          # t = p.read_text()
+          # blk = "\n".join([
+            # "config KSU_SUSFS_SUS_KSTAT_REDIRECT",
+            # "\tbool \"SUSFS kstat redirect\"",
+            # "\tdepends on KSU_SUSFS_SUS_KSTAT",
+            # "\tdefault n",
+            # "\thelp",
+            # "\t  Redirects kstat lookups to real file metadata for spoofed paths.",
+            # "",
+            # "config KSU_SUSFS_UNICODE_FILTER",
+            # "\tbool \"Unicode Filter\"",
+            # "\tdepends on KSU_SUSFS",
+            # "\tdefault y",
+            # "\thelp",
+            # "\t  Blocks filesystem path attacks using unicode characters.",
+            # "",
+            # "config KSU_SUSFS_HIDDEN_NAME",
+            # "\tbool \"Hidden Android/data package names\"",
+            # "\tdepends on KSU_SUSFS_SUS_PATH",
+            # "\tdefault n",
+            # "\thelp",
+            # "\t  Auto-hides Android/data and Android/obb package directories.",
+            # "",
+            # "config KSU_SUSFS_HARDENED",
+            # "\tbool \"Hardened SUSFS\"",
+            # "\tdepends on KSU_SUSFS",
+            # "\tdefault y",
+            # "\thelp",
+            # "\t  Fixes upstream SUSFS concurrency and error-handling bugs.",
+            # "",
+          # ]) + "\n"
+          # t = t.replace("endmenu\n", blk + "endmenu\n", 1)
+          # p.write_text(t)
+          # KCONFIG_PY
+            # echo "已 inline 加入 51_ Kconfig 項目"
+          # else
+            # echo "51_ Kconfig 項目已存在，跳過"
+          # fi
+
+          # apply_patch_if_needed "$PATCH_51"
+
+          zeromount_core_present() {
+            [ -f fs/zeromount.c ] &&
+              [ -f include/linux/zeromount.h ] &&
+              grep -q 'config ZEROMOUNT' fs/Kconfig &&
+              grep -q 'CONFIG_ZEROMOUNT' fs/Makefile &&
+              grep -q 'zeromount_getname_hook' fs/namei.c &&
+              grep -q 'zeromount_inject_dents' fs/readdir.c
+          }
+
+          if zeromount_core_present; then
+            echo "ZeroMount 核心檔案已存在，跳過 60_ ZeroMount patch"
+          else
+            apply_patch_if_needed "$PATCH_60"
+          fi
+
+          pushd "$KERNEL_ROOT/KernelSU" > /dev/null
+          apply_patch_if_needed "$PATCH_70"
+          popd > /dev/null
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path("fs/proc/task_mmu.c")
+          if not p.exists():
+              sys.exit(0)
+
+          lines = p.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+          clean = []
+          i = 0
+
+          while i < len(lines):
+              if (
+                  lines[i].strip() == "#ifdef CONFIG_ZEROMOUNT"
+                  and i + 2 < len(lines)
+                  and "zeromount_spoof_mmap_metadata(inode, &dev, &ino);" in lines[i + 1]
+                  and lines[i + 2].strip() == "#endif"
+              ):
+                  i += 3
+                  continue
+
+              clean.append(lines[i])
+              i += 1
+
+          hook = [
+              "#ifdef CONFIG_ZEROMOUNT\n",
+              "\t\tzeromount_spoof_mmap_metadata(inode, &dev, &ino);\n",
+              "#endif\n",
+          ]
+
+          for start, line in enumerate(clean):
+              if line.startswith("\tif (file) {"):
+                  for end in range(start + 1, len(clean)):
+                      if clean[end].startswith("\t}"):
+                          block = "".join(clean[start:end])
+                          if (
+                              "struct inode *inode" in block
+                              and "dev = inode->i_sb->s_dev;" in block
+                              and "ino = inode->i_ino;" in block
+                          ):
+                              clean[end:end] = hook
+                              p.write_text("".join(clean), encoding="utf-8")
+                              sys.exit(0)
+                          break
+
+          raise SystemExit("ZeroMount task_mmu fix failed: file-backed VMA block not found")
+          PY
+
+          sed -i "/^CONFIG_ZEROMOUNT=.*/d" "$DEFCONFIG"
+          sed -i "/^# CONFIG_ZEROMOUNT is not set$/d" "$DEFCONFIG"
+          echo "CONFIG_ZEROMOUNT=y" >> "$DEFCONFIG"
+
+          echo "ZeroMount 已啟用"
+
       - name: 克隆 Droidspaces 补丁仓库
         if: inputs.droidspaces != 'off'
         run: |
@@ -893,7 +1339,198 @@ jobs:
           echo "DROIDSPACES_PATCHES=/tmp/Droidspaces-OSS/Documentation/resources/kernel-patches/GKI" >> $GITHUB_ENV
 
       - name: 备份基准 defconfig
-        run: cp "$DEFCONFIG" "$DEFCONFIG.orig"
+        run: |
+          set -euo pipefail
+          cp "$DEFCONFIG" "$DEFCONFIG_BASELINE"
+          ls -l "$DEFCONFIG_BASELINE"
+
+      - name: 應用可選核心功能開關
+        working-directory: ${{ env.KERNEL_ROOT }}/common
+        run: |
+          set -euo pipefail
+
+          CONFIG_FILE="$DEFCONFIG"
+
+          cfg_name() {
+            local cfg="$1"
+            echo "${cfg#CONFIG_}"
+          }
+
+          config_defined() {
+            local cfg="$1"
+            local name
+            name="$(cfg_name "$cfg")"
+            grep -RqsE --include='Kconfig*' "^[[:space:]]*(menuconfig|config)[[:space:]]+${name}([[:space:]]|$)" .
+          }
+
+          config_known() {
+            local cfg="$1"
+            config_defined "$cfg" || grep -qE "^${cfg}=|^# ${cfg} is not set$" "$CONFIG_FILE"
+          }
+
+          remove_config_line() {
+            local cfg="$1"
+            sed -i "/^${cfg}=.*/d" "$CONFIG_FILE"
+            sed -i "/^# ${cfg} is not set$/d" "$CONFIG_FILE"
+          }
+
+          set_config_y() {
+            local cfg="$1"
+            remove_config_line "$cfg"
+            echo "${cfg}=y" >> "$CONFIG_FILE"
+            echo "  y: $cfg"
+          }
+
+          set_config_n() {
+            local cfg="$1"
+            remove_config_line "$cfg"
+            echo "# ${cfg} is not set" >> "$CONFIG_FILE"
+            echo "  n: $cfg"
+          }
+
+          set_config_str() {
+            local cfg="$1"
+            local value="$2"
+            remove_config_line "$cfg"
+            echo "${cfg}=\"${value}\"" >> "$CONFIG_FILE"
+            echo "  str: $cfg=$value"
+          }
+
+          enable_if_defined() {
+            local cfg="$1"
+            if config_defined "$cfg"; then
+              set_config_y "$cfg"
+            else
+              echo "  skip undefined: $cfg"
+            fi
+          }
+
+          disable_if_known() {
+            local cfg="$1"
+            if config_known "$cfg"; then
+              set_config_n "$cfg"
+            else
+              echo "  skip unknown: $cfg"
+            fi
+          }
+
+          if [ "${{ inputs.disable_samsung_security }}" = "true" ]; then
+            echo "啟用：關閉三星安全堆疊/簽名限制"
+            for cfg in \
+              CONFIG_UH CONFIG_RKP CONFIG_KDP CONFIG_KDP_CRED CONFIG_KDP_NS \
+              CONFIG_SECURITY_DEFEX CONFIG_INTEGRITY CONFIG_FIVE CONFIG_KNOX_NCM \
+              CONFIG_SKB_TRACER CONFIG_HUGEPAGE_POOL CONFIG_TRIM_UNUSED_KSYMS \
+              CONFIG_MODULE_SIG CONFIG_MODULE_SIG_ALL CONFIG_MODULE_SIG_FORCE \
+              CONFIG_MODULE_SIG_PROTECT
+            do
+              disable_if_known "$cfg"
+            done
+          fi
+
+          if [ "${{ inputs.use_ntfs3 }}" = "true" ]; then
+            echo "啟用：NTFS3"
+            enable_if_defined CONFIG_NTFS3_FS
+            enable_if_defined CONFIG_NLS_UTF8
+            enable_if_defined CONFIG_NTFS3_LZX_XPRESS
+            enable_if_defined CONFIG_NTFS3_FS_POSIX_ACL
+          fi
+
+          if [ "${{ inputs.use_bbr }}" = "true" ]; then
+            echo "啟用：FQ + TCP BBR"
+            enable_if_defined CONFIG_NET_SCH_FQ
+            enable_if_defined CONFIG_TCP_CONG_ADVANCED
+            enable_if_defined CONFIG_TCP_CONG_BBR
+            enable_if_defined CONFIG_DEFAULT_BBR
+            if config_defined CONFIG_DEFAULT_TCP_CONG; then
+              set_config_str CONFIG_DEFAULT_TCP_CONG "bbr"
+            fi
+          fi
+
+          if [ "${{ inputs.use_full_tmpfs }}" = "true" ]; then
+            echo "啟用：完整 TMPFS"
+            enable_if_defined CONFIG_TMPFS
+            enable_if_defined CONFIG_TMPFS_POSIX_ACL
+            enable_if_defined CONFIG_TMPFS_XATTR
+            enable_if_defined CONFIG_TMPFS_INODE64
+          fi
+
+          if [ "${{ inputs.use_zeromount }}" = "true" ]; then
+            echo "啟用：完整 ZeroMount KConfig"
+            enable_if_defined CONFIG_TCP_CONG_CUBIC
+            enable_if_defined CONFIG_TCP_CONG_WESTWOOD
+            enable_if_defined CONFIG_KSU_SUSFS_SUS_PATH
+            enable_if_defined CONFIG_KSU_SUSFS_SUS_MOUNT
+            enable_if_defined CONFIG_KSU_SUSFS_SUS_KSTAT
+            enable_if_defined CONFIG_KSU_SUSFS_SUS_MAP
+            enable_if_defined CONFIG_KSU_SUSFS_SPOOF_UNAME
+            enable_if_defined CONFIG_KSU_SUSFS_ENABLE_LOG
+            enable_if_defined CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+            enable_if_defined CONFIG_KSU_SUSFS_OPEN_REDIRECT
+            enable_if_defined CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+            enable_if_defined CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+            enable_if_defined CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+          fi
+
+          if [ "${{ inputs.use_full_ipset }}" = "true" ]; then
+            echo "啟用：ipset/netfilter 容器網路支持"
+            for cfg in \
+              CONFIG_IP6_NF_NAT \
+              CONFIG_NETFILTER_XT_MATCH_ADDRTYPE CONFIG_NETFILTER_XT_TARGET_LOG \
+              CONFIG_NETFILTER_XT_MATCH_RECENT CONFIG_NETFILTER_XT_TARGET_HL \
+              CONFIG_IP_SET CONFIG_IP_SET_BITMAP_IP CONFIG_IP_SET_BITMAP_IPMAC \
+              CONFIG_IP_SET_BITMAP_PORT CONFIG_IP_SET_HASH_IP CONFIG_IP_SET_HASH_IPMARK \
+              CONFIG_IP_SET_HASH_IPPORT CONFIG_IP_SET_HASH_IPPORTIP \
+              CONFIG_IP_SET_HASH_IPPORTNET CONFIG_IP_SET_HASH_IPMAC \
+              CONFIG_IP_SET_HASH_MAC CONFIG_IP_SET_HASH_NET CONFIG_IP_SET_HASH_NETNET \
+              CONFIG_IP_SET_HASH_NETPORT CONFIG_IP_SET_HASH_NETPORTNET \
+              CONFIG_IP_SET_HASH_NETIFACE CONFIG_IP_SET_LIST_SET \
+              CONFIG_NETFILTER_XT_SET CONFIG_NETFILTER_XT_TARGET_REJECT \
+              CONFIG_IP_NF_TARGET_REJECT
+            do
+              enable_if_defined "$cfg"
+            done
+          fi
+
+          if [ "${{ inputs.hide_ipv6_nat_config }}" = "true" ]; then
+            echo "啟用：隱藏 /proc/config.gz 中的 CONFIG_IP6_NF_NAT=y"
+            KERNEL_MAKEFILE="kernel/Makefile"
+            if [ -f "$KERNEL_MAKEFILE" ] && ! grep -qF 'IP6_NF_NAT_FIX_MARKER' "$KERNEL_MAKEFILE"; then
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("kernel/Makefile")
+          s = p.read_text(encoding="utf-8")
+
+          marker = "IP6_NF_NAT_FIX_MARKER"
+          if marker in s:
+              raise SystemExit(0)
+
+          block = (
+              "\n# IP6_NF_NAT_FIX_MARKER\n"
+              "define config_fix\n"
+              "\tif grep -q '^CONFIG_IP6_NF_NAT=y' $@; then sed -i 's/^CONFIG_IP6_NF_NAT=y$$/CONFIG_IP6_NF_NAT=n/' $@; fi\n"
+              "endef\n"
+          )
+
+          needle = "filechk_cat = cat $<\n"
+          rule = "$(obj)/config_data: arch/arm64/configs/gki_defconfig FORCE\n\t$(call filechk,cat)\n"
+
+          if needle not in s:
+              raise SystemExit("kernel/Makefile anchor not found: filechk_cat")
+          if rule not in s:
+              raise SystemExit("kernel/Makefile anchor not found: config_data")
+
+          idx = s.index(needle) + len(needle)
+          s = s[:idx] + block + s[idx:]
+          s = s.replace(rule, rule + "\t$(Q)$(config_fix)\n", 1)
+
+          p.write_text(s, encoding="utf-8")
+          PY
+              echo "已寫入 IPv6 NAT config_data 隱藏邏輯"
+            else
+              echo "kernel/Makefile 不存在或已處理，跳過"
+            fi
+          fi
 
       - name: 集成 Droidspaces 支持
         if: inputs.droidspaces != 'off'
@@ -1410,7 +2047,8 @@ jobs:
             LOG_FILE="$LOG_DIR/compile-attempt-${ATTEMPT}.log"
 
             set -o pipefail
-            {
+            set +e
+            (
               echo "编译尝试: $ATTEMPT"
               echo "开始时间: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
               echo "当前 KSU 最新提交日期: ${KSU_LATEST_COMMIT_DATE}"
@@ -1418,39 +2056,90 @@ jobs:
               set -ex
               cd "$KERNEL_ROOT"
 
+              if [ -z "${ANDROID_CLANG_BIN:-}" ] || [ ! -x "$ANDROID_CLANG_BIN/clang" ]; then
+                echo "::error::ANDROID_CLANG_BIN is not configured correctly: ${ANDROID_CLANG_BIN:-unset}"
+                exit 1
+              fi
+
+              export PATH="$ANDROID_CLANG_BIN:$PATH"
+              export CLANG_PREBUILT_BIN="$ANDROID_CLANG_BIN"
+
+              echo "Compiler selected by PATH:"
+              command -v clang
+              clang --version
+
               sed -i 's/BUILD_SYSTEM_DLKM=1/BUILD_SYSTEM_DLKM=0/' ./common/build.config.gki.aarch64
               sed -i '/MODULES_ORDER=android\/gki_aarch64_modules/d' ./common/build.config.gki.aarch64
               sed -i '/KMI_SYMBOL_LIST_STRICT_MODE/d' ./common/build.config.gki.aarch64
 
               if [ -f "build/build.sh" ]; then
-                LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang" || exit 1
-                strings "out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image" | grep 'Linux version'
+                PATH="$ANDROID_CLANG_BIN:$PATH" LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 \
+                  build/build.sh CC="ccache clang"
+                strings "out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image" \
+                  | grep 'Linux version'
               else
                 # 提取 gki_defconfig 修改到 fragment，避免 bazel trim 检查失败
                 FRAG="common/arch/arm64/configs/ksu.fragment"
-                diff "$DEFCONFIG.orig" "$DEFCONFIG" | grep '^>' | sed 's/^> //; s/^[[:space:]]*//' > "$FRAG" || true
-                cp "$DEFCONFIG.orig" "$DEFCONFIG"
+                diff "$DEFCONFIG_BASELINE" "$DEFCONFIG" \
+                  | grep '^>' \
+                  | sed 's/^> //; s/^[[:space:]]*//' \
+                  | awk '
+                      /^CONFIG_[A-Za-z0-9_]+=/ {
+                        key = $0
+                        sub(/=.*/, "", key)
+                        if (!(key in seen)) {
+                          order[++n] = key
+                          seen[key] = 1
+                        }
+                        value[key] = $0
+                        next
+                      }
+
+                      /^# CONFIG_[A-Za-z0-9_]+ is not set$/ {
+                        key = $0
+                        sub(/^# /, "", key)
+                        sub(/ is not set$/, "", key)
+                        if (!(key in seen)) {
+                          order[++n] = key
+                          seen[key] = 1
+                        }
+                        value[key] = $0
+                        next
+                      }
+
+                      END {
+                        for (i = 1; i <= n; i++) {
+                          print value[order[i]]
+                        }
+                      }
+                    ' > "$FRAG" || true
+                cp "$DEFCONFIG_BASELINE" "$DEFCONFIG"
                 echo "=== KSU Fragment 内容 ==="
                 cat "$FRAG"
                 echo "========================="
+
                 FRAG_FLAG=""
                 if [ -s "$FRAG" ]; then
                   FRAG_FLAG="--defconfig_fragment=//common:arch/arm64/configs/ksu.fragment"
                 fi
+
                 LTO_FLAG="--lto=thin"
                 if [ "${{ inputs.kernel_version }}" = "6.12" ]; then
                   LTO_FLAG="--lto=none"
                 fi
-                tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast $LTO_FLAG $FRAG_FLAG //common:kernel_aarch64_dist || exit 1
+
+                tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast \
+                  $LTO_FLAG $FRAG_FLAG //common:kernel_aarch64_dist
                 strings ./bazel-bin/common/kernel_aarch64/Image | grep 'Linux version'
               fi
 
               echo "当前 KSU 最新提交日期: ${KSU_LATEST_COMMIT_DATE}"
               echo "当前 SUSFS 最新提交日期: ${SUSFS_LATEST_COMMIT_DATE}"
               echo "如果日期不同或相差过远则补丁失效、编译失败"
-            } 2>&1 | tee "$LOG_FILE"
+            ) 2>&1 | tee "$LOG_FILE"
 
             BUILD_STATUS=${PIPESTATUS[0]}
+            set -e
             {
               echo "结束时间: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
               echo "退出码: $BUILD_STATUS"
@@ -1494,6 +2183,52 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
           compression-level: 9
+
+      - name: 驗證 YukiZygisk Built-in 連結
+        if: inputs.use_yukizygisk
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          set -euo pipefail
+
+          # 定位編譯後的 Kernel Image（兼容 build.sh 與 bazel 兩種後端）
+          IMG=""
+          for cand in \
+            "out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image" \
+            "./bazel-bin/common/kernel_aarch64/Image"; do
+            if [ -f "$cand" ]; then IMG="$cand"; break; fi
+          done
+          [ -n "$IMG" ] || { echo "::error::找不到編譯後的 Kernel Image，無法驗證 Built-in 連結"; exit 1; }
+          echo "Kernel Image: $IMG"
+
+          # Built-in 物件確實被連結的證明：整合物件內含 pr_info("yukizygisk: ...")
+          # 字串（module_integrated.c 的 "yukizygisk: integrated init ..." 等）。
+          # 若 CONFIG_KSU_YUKIZYGISK 未生效或 Kbuild.inc 未被編，Image 不會含這些字串。
+          if ! strings "$IMG" | grep -q 'yukizygisk:'; then
+            echo "::error::Image 未含 yukizygisk 符號字串；Built-in 物件未被連結（檢查 CONFIG_KSU_YUKIZYGISK=y 與 Kbuild.inc 是否生效）"
+            exit 1
+          fi
+          echo "✓ Built-in 物件已連結（Image 含 yukizygisk 字串）"
+
+          # 若能定位最終 .config，確認 CONFIG_KSU_YUKIZYGISK=y
+          FOUND_CFG=""
+          for cfg in \
+            "out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/"*/.config \
+            "out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/.config" \
+            "./bazel-bin/common/kernel_aarch64/.config"; do
+            if [ -f "$cfg" ]; then FOUND_CFG="$cfg"; break; fi
+          done
+          if [ -n "$FOUND_CFG" ]; then
+            if grep -q '^CONFIG_KSU_YUKIZYGISK=y' "$FOUND_CFG"; then
+              echo "✓ $FOUND_CFG: CONFIG_KSU_YUKIZYGISK=y"
+            else
+              echo "::error::$FOUND_CFG 未啟用 CONFIG_KSU_YUKIZYGISK=y"
+              exit 1
+            fi
+          else
+            echo "::warning::未定位最終 .config（後端未輸出可讀 .config）；已以 Image 字串證明 Built-in 連結"
+          fi
+
+          echo "YukiZygisk Built-in 連結驗證通過 (commit=${YZ_SHA:-unknown})"
 
       # - name: 应用 KPM 补丁 (SukiSU/ReSukiSU/Next)
       #   if: startsWith(inputs.use_kpm, 'patched') && (inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'ReSukiSU' || inputs.ksu_variant == 'Next')

@@ -27,7 +27,7 @@ on:
         description: "自定义构建时间 (可选，N或留空=当前UTC)"
         required: false
         type: string
-        default: "Sun Dec 01 08:10:00 UTC 2024"
+        default: "Tue Aug 26 07:33:36 UTC 2025"
       use_kpm:
         description: "KPM 功能（patched 尚不支持）"
         required: true
@@ -57,6 +57,11 @@ on:
         default: "仅上传 AnyKernel3.zip"
       droidspaces_ntsync:
         description: "启用 Droidspaces 容器 NTSync 支持（需启用 Droidspaces）"
+        required: false
+        type: boolean
+        default: false
+      use_yukizygisk:
+        description: "启用YukiZygisk built-in"
         required: false
         type: boolean
         default: false
@@ -90,6 +95,41 @@ on:
         required: false
         type: boolean
         default: false
+      use_zeromount:
+        description: "啟用 ZeroMount（實驗性，需 SUSFS，主要適配 ReSukiSU）"
+        required: false
+        type: boolean
+        default: false
+      use_ntfs3:
+        description: "啟用 NTFS3 文件系統支持"
+        required: false
+        type: boolean
+        default: false
+      use_bbr:
+        description: "啟用 FQ + TCP BBR"
+        required: false
+        type: boolean
+        default: false
+      use_full_tmpfs:
+        description: "啟用完整 TMPFS/XATTR/ACL/INODE64"
+        required: false
+        type: boolean
+        default: false
+      use_full_ipset:
+        description: "啟用完整 ipset/netfilter 容器網路支持"
+        required: false
+        type: boolean
+        default: false
+      hide_ipv6_nat_config:
+        description: "在 /proc/config.gz 中隱藏 CONFIG_IP6_NF_NAT=y"
+        required: false
+        type: boolean
+        default: false
+      disable_samsung_security:
+        description: "關閉三星安全堆疊/簽名限制（僅三星內核建議測試）"
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       kernelsu_variant:
@@ -101,7 +141,11 @@ on:
       build_time:
         required: false
         type: string
-        default: "Sun Dec 01 08:10:00 UTC 2024"
+        default: "Tue Aug 26 07:33:36 UTC 2025"
+      use_yukizygisk:
+        required: false
+        type: boolean
+        default: false
       use_zram:
         required: true
         type: boolean
@@ -134,6 +178,34 @@ on:
         type: string
         default: "上传全部"
       droidspaces_ntsync:
+        required: false
+        type: boolean
+        default: false
+      use_zeromount:
+        required: false
+        type: boolean
+        default: false
+      use_ntfs3:
+        required: false
+        type: boolean
+        default: false
+      use_bbr:
+        required: false
+        type: boolean
+        default: false
+      use_full_tmpfs:
+        required: false
+        type: boolean
+        default: false
+      use_full_ipset:
+        required: false
+        type: boolean
+        default: false
+      hide_ipv6_nat_config:
+        required: false
+        type: boolean
+        default: false
+      disable_samsung_security:
         required: false
         type: boolean
         default: false
@@ -199,6 +271,14 @@ jobs:
       enable_susfs: ${{ !inputs.cancel_susfs }}
       droidspaces: ${{ inputs.droidspaces || 'off' }}
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync || false }}
+      use_zeromount: ${{ inputs.use_zeromount || false }}
+      use_ntfs3: ${{ inputs.use_ntfs3 || false }}
+      use_yukizygisk: ${{ inputs.use_yukizygisk || false }}
+      use_bbr: ${{ inputs.use_bbr || false }}
+      use_full_tmpfs: ${{ inputs.use_full_tmpfs || false }}
+      use_full_ipset: ${{ inputs.use_full_ipset || false }}
+      hide_ipv6_nat_config: ${{ inputs.hide_ipv6_nat_config || false }}
+      disable_samsung_security: ${{ inputs.disable_samsung_security || false }}
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
 
   # 仅在直接触发时运行，从 main.yml 调用时跳过
