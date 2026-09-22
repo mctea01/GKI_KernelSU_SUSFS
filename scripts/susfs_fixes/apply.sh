@@ -145,6 +145,12 @@ fi
 
 patch -p1 < "$SUSFS_PATCH" || true
 
+# 兼容部分旧版 SUSFS 补丁在 stat.c 中遗漏 vfs_statx 函数体起始花括号，
+# 会导致后续 cp_new_stat/vfs_statx 报隐式声明与语法错误
+if [[ -f fs/stat.c ]]; then
+  perl -0i -pe 's/(static int vfs_statx\([^\n]*\n[^\n]*request_mask\)\n)(\s*if\s*\(filename\)\s*\{)/${1}{\n$2/s' fs/stat.c
+fi
+
 # 为尚未提供 SU 会话 FD 接口的 SukiSU/ReSukiSU 恢复旧版 exec hook 行为
 EXEC_HELPER=""
 if [[ "$KSU_VARIANT" == SukiSU* || "$KSU_VARIANT" == "ReSukiSU" ]]; then
